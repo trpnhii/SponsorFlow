@@ -2,7 +2,7 @@ name: Deploy SponsorFlow
 
 on:
   push:
-    branches: [main, tech-thien-nguyen]
+    branches: [main]
     paths:
       - "web/**"
       - ".github/workflows/deploy-pages.yml"
