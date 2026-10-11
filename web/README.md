@@ -36,7 +36,13 @@ Mở: http://localhost:5173
 | `#/reports` | Báo cáo nhà tài trợ |
 | `#/sponsor` | Góc nhìn nhà tài trợ |
 
-## Luồng demo gợi ý
+## Hướng dẫn demo theo tính năng
+
+Script đầy đủ F01–F11: [`design/demos/`](../design/demos/)
+
+Bắt đầu tại `#/login`. Tài khoản nhanh: `admin@greenhope.vn` / `demo123`.
+
+## Luồng demo nhanh (sau khi đã login)
 
 1. **Tổng quan** → bấm “Tải chứng từ lên”
 2. **Upload** → “Phân tích bằng AI”
@@ -52,4 +58,5 @@ web/
   index.html
   css/app.css
   js/app.js
+  assets/logo.jpg
 ```
