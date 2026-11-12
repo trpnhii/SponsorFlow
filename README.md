@@ -22,5 +22,3 @@ Deploy folder `web/` qua Actions (`.github/workflows/deploy-pages.yml`).
 2. GitHub → **Settings** → **Pages** → **Source**: *GitHub Actions*
 3. Tab **Actions** → chờ workflow *Deploy SponsorFlow* xong
 4. Demo public: `https://<user>.github.io/<repo>/`
-
-(Remote hiện tại: https://trpnhii.github.io/build-profile-2026/)
