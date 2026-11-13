@@ -1,6 +1,8 @@
+import { analyzeDocumentAuthenticity, modelInfo } from "./authenticity-model.js";
+
 /**
  * SponsorFlow Web Demo
- * Static SPA matching the product mockups (no real AI).
+ * Static SPA matching the product mockups with local ONNX image analysis.
  */
 
 // ---------- Icons (inline SVG) ----------
@@ -66,7 +68,12 @@ const state = {
   collapsed: false,
   mobileOpen: false,
   docType: "invoice",
-  selectedFile: true,
+  selectedFile: null,
+  selectedFileName: "test-invoice-demo.jpg",
+  selectedFileProvenance: "unknown",
+  analysisStatus: "idle",
+  analysisProgress: 0,
+  analysisMessage: "Sẵn sàng",
   analyzeTimer: null,
   showInviteForm: false,
   authError: "",
@@ -338,6 +345,51 @@ function loadValidationResolution() {
 
 function saveValidationResolution(value) {
   localStorage.setItem("sf_validation_resolution", JSON.stringify(value));
+}
+
+const DEFAULT_DOCUMENT_REVIEW = {
+  status: "flagged",
+  riskScore: 78,
+  riskLevel: "high",
+  flags: [
+    "Metadata cho thấy tệp đã qua Adobe Photoshop",
+    "Nhiễu ảnh không đồng nhất quanh vùng tổng tiền",
+    "Phát hiện dấu hiệu nội dung tạo/chỉnh sửa bằng AI",
+  ],
+  reviewedBy: "",
+  reviewedAt: "",
+  note: "",
+};
+
+function loadDocumentReview() {
+  try {
+    return JSON.parse(localStorage.getItem("sf_document_review") || "null") || { ...DEFAULT_DOCUMENT_REVIEW };
+  } catch {
+    return { ...DEFAULT_DOCUMENT_REVIEW };
+  }
+}
+
+function saveDocumentReview(value) {
+  localStorage.setItem("sf_document_review", JSON.stringify(value));
+}
+
+function loadAuthenticityAnalysis() {
+  try {
+    return JSON.parse(localStorage.getItem("sf_authenticity_analysis") || "null");
+  } catch {
+    return null;
+  }
+}
+
+function saveAuthenticityAnalysis(value) {
+  localStorage.setItem("sf_authenticity_analysis", JSON.stringify(value));
+}
+
+function documentReviewBadge(review = loadDocumentReview()) {
+  if (review.status === "approved") return `<span class="badge badge-success">${icon("check", 12)} Người duyệt đã xác minh</span>`;
+  if (review.status === "rejected") return `<span class="badge badge-danger">${icon("x", 12)} Đã từ chối</span>`;
+  if (review.status === "auto_clear") return `<span class="badge badge-warning">${icon("clock", 12)} Model đạt · chờ duyệt</span>`;
+  return `<span class="badge badge-danger">${icon("warn", 12)} Flag AI/chỉnh sửa · chờ người duyệt</span>`;
 }
 
 function loadMetrics() {
@@ -1050,6 +1102,7 @@ function pageOverview() {
 }
 
 function pageDocuments() {
+  const review = loadDocumentReview();
   return `
     <h1 class="page-title">Chứng từ</h1>
     <p class="page-sub">Quản lý hóa đơn, phiếu thu và tài liệu minh chứng của dự án.</p>
@@ -1081,7 +1134,7 @@ function pageDocuments() {
               <td>Hóa đơn</td>
               <td>2.450.000đ</td>
               <td>Học liệu</td>
-              <td><span class="badge badge-warning">${icon("clock", 12)} Chờ phê duyệt</span></td>
+              <td>${documentReviewBadge(review)}</td>
               <td><a class="link-all" href="#/extract">Xem</a></td>
             </tr>
             <tr>
@@ -1142,8 +1195,8 @@ function pageUpload() {
           <div class="dropzone" id="dropzone" tabindex="0">
             <div class="cloud">${I.cloud}</div>
             <strong>Kéo thả tệp vào đây hoặc chọn từ máy tính</strong>
-            <p>Hỗ trợ định dạng: JPG, PNG, PDF – Tối đa 20MB/tệp.</p>
-            <input type="file" id="file-input" accept=".jpg,.jpeg,.png,.pdf" hidden />
+            <p>Model hỗ trợ JPG, PNG – Tối đa 20MB/tệp.</p>
+            <input type="file" id="file-input" accept="image/jpeg,image/png,.jpg,.jpeg,.png" hidden />
           </div>
 
           <div class="section-label">Chọn loại tài liệu</div>
@@ -1161,13 +1214,24 @@ function pageUpload() {
           </div>
 
           <div class="note-box">
-            <h4>${icon("info", 16)} Lưu ý trước khi tải</h4>
+            <h4>${icon("shield", 16)} Kiểm tra tính nguyên bản tự động</h4>
             <ul>
               <li>Ảnh chụp rõ nét, đủ 4 góc tờ hóa đơn</li>
               <li>Tránh loá sáng hoặc bị che khuất nội dung</li>
-              <li>Ưu tiên file PDF nếu có bản scan sạch</li>
-              <li>Mỗi tệp tối đa 20MB</li>
+              <li>Hệ thống kiểm tra metadata, vùng chỉnh sửa và dấu hiệu AI</li>
+              <li>Tệp có dấu hiệu bất thường sẽ bị flag và bắt buộc người có quyền duyệt</li>
             </ul>
+          </div>
+
+          <div class="authenticity-demo">
+            <div>
+              <strong>${icon("spark", 15)} ${modelInfo.name} · ${modelInfo.size}</strong>
+              <span>${modelInfo.runtime}. ${modelInfo.privacy}.</span>
+            </div>
+            <div class="action-row" style="margin:0">
+              <button class="btn btn-outline btn-sm" id="btn-sample-invoice" type="button">${icon("receipt")} Hóa đơn mẫu</button>
+              <button class="btn btn-outline btn-sm" id="btn-sample-ai" type="button">${icon("image")} Ảnh AI mẫu</button>
+            </div>
           </div>
 
           <div class="action-row">
@@ -1187,9 +1251,9 @@ function pageUpload() {
           <div class="file-card">
             <div class="file-thumb img">JPG</div>
             <div class="file-meta">
-              <strong>hoa_don_hoc_lieu_thang_05.jpg</strong>
-              <span>2.4 MB</span>
-              <div class="file-status">${icon("check", 12)} Sẵn sàng phân tích</div>
+              <strong id="selected-file-name">${state.selectedFileName}</strong>
+              <span id="selected-file-size">${state.selectedFile ? `${(state.selectedFile.size / 1024 / 1024).toFixed(2)} MB` : "Ảnh mẫu tích hợp"}</span>
+              <div class="file-status">${icon("check", 12)} Model sẽ phân tích thật trên thiết bị</div>
             </div>
             <button class="icon-btn" type="button">${icon("more", 16)}</button>
           </div>
@@ -1240,37 +1304,33 @@ function pageAnalyzing() {
         <div class="file-card" style="margin:14px 0;background:#f9fafb">
           <div class="file-thumb img">JPG</div>
           <div class="file-meta">
-            <strong>hoa_don_hoc_lieu_thang_05.jpg</strong>
-            <span>Hóa đơn / Phiếu thu</span>
+            <strong>${state.selectedFileName}</strong>
+            <span>Hóa đơn / ảnh minh chứng · xử lý cục bộ</span>
           </div>
         </div>
 
         <div class="step-list" id="analyze-steps">
           <div class="step done">
             <div class="step-dot">${icon("check", 14)}</div>
-            <div class="step-body"><strong>Đã nhận diện tệp</strong><span>09:28:15 AM</span></div>
+            <div class="step-body"><strong>Đã nhận diện tệp</strong><span>Không gửi ảnh lên server</span></div>
           </div>
-          <div class="step done">
-            <div class="step-dot">${icon("check", 14)}</div>
-            <div class="step-body"><strong>OCR hoàn tất</strong><span>09:28:16 AM</span></div>
+          <div class="step ${state.analysisProgress >= 38 ? "done" : "active"}">
+            <div class="step-dot">${state.analysisProgress >= 38 ? icon("check", 14) : '<span class="spinner"></span>'}</div>
+            <div class="step-body"><strong>Đọc metadata và tín hiệu nén ảnh</strong><span>Forensic heuristics</span></div>
           </div>
-          <div class="step done">
-            <div class="step-dot">${icon("check", 14)}</div>
-            <div class="step-body"><strong>Đã trích xuất dữ liệu</strong><span>09:28:18 AM</span></div>
+          <div class="step ${state.analysisProgress >= 62 ? "done" : state.analysisProgress >= 38 ? "active" : ""}">
+            <div class="step-dot">${state.analysisProgress >= 62 ? icon("check", 14) : state.analysisProgress >= 38 ? '<span class="spinner"></span>' : ""}</div>
+            <div class="step-body"><strong>Nạp ${modelInfo.name}</strong><span>ONNX ${modelInfo.size}</span></div>
           </div>
-          <div class="step done">
-            <div class="step-dot">${icon("check", 14)}</div>
-            <div class="step-body"><strong>Đã gợi ý hạng mục chi</strong><span>09:28:20 AM</span></div>
-          </div>
-          <div class="step active" id="step-active">
-            <div class="step-dot"><span class="spinner"></span></div>
-            <div class="step-body"><strong>Đang kiểm tra trùng lặp và đối chiếu ngân sách</strong><span>Đang xử lý…</span></div>
+          <div class="step ${state.analysisProgress >= 88 ? "done" : state.analysisProgress >= 62 ? "active" : ""}" id="step-active">
+            <div class="step-dot">${state.analysisProgress >= 88 ? icon("check", 14) : '<span class="spinner"></span>'}</div>
+            <div class="step-body"><strong>Chấm điểm khả năng ảnh AI</strong><span id="analysis-message">${state.analysisMessage}</span></div>
           </div>
         </div>
 
         <div class="progress-wide">
-          <div class="bar"><i id="analyze-bar" style="width:82%"></i></div>
-          <div class="pct" id="analyze-pct">82%</div>
+          <div class="bar"><i id="analyze-bar" style="width:${state.analysisProgress}%"></i></div>
+          <div class="pct" id="analyze-pct">${state.analysisProgress}%</div>
         </div>
 
         <button class="btn btn-outline" id="btn-cancel-analyze" type="button" style="margin-top:8px">
@@ -1290,7 +1350,7 @@ function pageAnalyzing() {
         </div>
         <div class="info-soft">
           ${icon("spark", 16)}
-          <span>Hệ thống đang OCR, trích xuất và đối chiếu chứng từ với ngân sách dự án. (Demo – không gọi AI thật.)</span>
+          <span>Đây là inference thật bằng model ONNX chạy trong trình duyệt. Điểm số là tín hiệu hỗ trợ, không phải bằng chứng kết luận gian lận.</span>
         </div>
       </div>
     </div>
@@ -1324,6 +1384,11 @@ function fakeInvoice() {
 
 function pageExtract() {
   const failed = state.ocrMode === "failed";
+  const analysis = loadAuthenticityAnalysis();
+  const hasAnalysis = Boolean(analysis);
+  const suspicious = analysis?.riskLevel === "high" || analysis?.riskLevel === "medium";
+  const review = loadDocumentReview();
+  const riskLabel = analysis?.riskLevel === "high" ? "Rủi ro cao" : analysis?.riskLevel === "medium" ? "Cần xem lại" : "Rủi ro thấp";
   const title = failed ? "OCR không đọc được đầy đủ" : "Kết quả trích xuất & kiểm tra";
   const confidence = failed ? 42 : 96;
   return `
@@ -1376,6 +1441,27 @@ function pageExtract() {
           <div class="check-item warn">${icon("warn", 16)} Ngân sách hạng mục Học liệu sẽ đạt 92% sau khi duyệt</div>
         </div>
 
+        <div class="authenticity-panel ${suspicious ? "is-risk" : "is-clean"}">
+          <div class="risk-score">
+            <span>${icon(suspicious ? "warn" : "shield", 20)}</span>
+            <div><strong>${!hasAnalysis ? "Chưa chạy model tính nguyên bản" : suspicious ? "Model phát hiện tín hiệu cần kiểm tra" : "Không phát hiện tín hiệu bất thường nổi bật"}</strong><small>${hasAnalysis ? `Điểm rủi ro ${analysis.riskScore}/100 · ${riskLabel} · ${analysis.durationMs} ms` : "Tải hoặc chọn ảnh mẫu để phân tích thật"}</small></div>
+            ${!hasAnalysis ? `<a class="btn btn-outline btn-sm" href="#/upload">Phân tích</a>` : suspicious ? documentReviewBadge(review) : `<span class="badge badge-success">Kiểm tra đạt</span>`}
+          </div>
+          ${
+            hasAnalysis
+              ? `<div class="model-score-grid">
+                   <div><strong>${analysis.aiProbability == null ? "—" : `${analysis.aiProbability}%`}</strong><span>Khả năng ảnh AI</span></div>
+                   <div><strong>${analysis.metadataScore}%</strong><span>Tín hiệu metadata</span></div>
+                   <div><strong>${analysis.forensicScore}%</strong><span>Bất thường JPEG</span></div>
+                   <div><strong>${analysis.modelAvailable ? "Đã chạy" : "Fallback"}</strong><span>${analysis.modelName}</span></div>
+                 </div>
+                 <ul class="risk-flags">${analysis.flags.map((flag) => `<li>${icon(suspicious ? "warn" : "check", 14)} ${flag}</li>`).join("")}</ul>
+                 ${analysis.modelError ? `<div class="review-lock">${icon("warn", 16)} Model lỗi: ${analysis.modelError}. Kết quả chỉ dựa trên heuristic.</div>` : ""}
+                 ${suspicious ? `<div class="review-lock">${icon("shield", 16)} Chứng từ đang bị cách ly: chưa được ghi nhận vào thực chi và chưa hiển thị cho nhà tài trợ cho tới khi người duyệt xác nhận.</div>` : `<div class="review-lock">${icon("info", 16)} Model không phát hiện tín hiệu nổi bật; khoản chi vẫn theo quy trình phê duyệt thông thường.</div>`}`
+              : `<div class="review-lock">${icon("info", 16)} Chưa có kết quả model. Không dùng dữ liệu mô phỏng để quyết định.</div>`
+          }
+        </div>
+
         <div class="section-label">Liên kết với hoạt động</div>
         <select class="form-control">
           <option>Phát bộ dụng cụ học tập – An Giang</option>
@@ -1384,9 +1470,9 @@ function pageExtract() {
         </select>
 
         <div class="action-footer">
-          <button class="btn btn-primary" id="btn-approve" type="button">${icon("check")} Duyệt khoản chi</button>
+          <button class="btn btn-primary" id="btn-approve" type="button">${icon("check")} ${suspicious ? "Người duyệt xác minh & ghi nhận" : "Duyệt khoản chi"}</button>
           <button class="btn btn-outline" id="btn-edit" type="button">${icon("pencil")} Chỉnh sửa thông tin</button>
-          <button class="btn btn-danger-outline" id="btn-reject" type="button">${icon("x")} Từ chối</button>
+          <button class="btn btn-danger-outline" id="btn-reject" type="button">${icon("x")} ${suspicious ? "Từ chối / yêu cầu tải lại" : "Từ chối"}</button>
         </div>
       </div>
     </div>
@@ -1925,6 +2011,7 @@ function pageFunding() {
 function pageApprovals() {
   const meta = loadBudgetMeta();
   const session = getSession();
+  const review = loadDocumentReview();
   return `
     <div class="page-head">
       <div>
@@ -1957,8 +2044,8 @@ function pageApprovals() {
       <div class="task-item" data-go="#/extract">
         <span class="task-icon" style="background:#fee2e2;color:#dc2626">${icon("receipt", 16)}</span>
         <div class="task-body">
-          <div class="task-title">Hóa đơn học liệu — 2.450.000đ</div>
-          <div class="task-desc">Có cảnh báo validation · bấm để xem chứng từ + duyệt</div>
+          <div class="task-title">Hóa đơn học liệu — 2.450.000đ ${documentReviewBadge(review)}</div>
+          <div class="task-desc">FLAG: EDIT_AI_SUSPECTED · điểm rủi ro ${review.riskScore}/100 · không tự động ghi nhận</div>
         </div>
         <a class="btn btn-outline btn-sm" href="#/extract">Xử lý</a>
       </div>
@@ -2078,6 +2165,31 @@ function pageImpact() {
       </div>
       <div class="info-soft">${icon("info", 16)} Số liệu tự khai báo không được gắn nhãn xác thực độc lập; metric thiếu evidence sẽ bị chú thích trong report.</div>
     </div>
+    <div class="card card-pad mt-16">
+      <div class="impact-proof-grid">
+        <div class="impact-proof-photo">
+          <img src="./assets/impact-handover-demo.png" alt="Ảnh minh chứng demo: bàn giao dụng cụ học tập tại trường" />
+          <span>Ảnh minh chứng demo · đã ẩn thông tin nhận diện</span>
+        </div>
+        <div>
+          <span class="eyebrow">TRACE ID · IMP-AG-0526</span>
+          <h3>2.450.000đ đã tạo ra kết quả gì?</h3>
+          <div class="impact-number-grid">
+            <div><strong>120</strong><span>bộ dụng cụ đã bàn giao</span></div>
+            <div><strong>120</strong><span>học sinh có biên nhận</span></div>
+            <div><strong>3</strong><span>trường xác nhận</span></div>
+            <div><strong>20.417đ</strong><span>chi phí / học sinh</span></div>
+          </div>
+          <div class="proof-list">
+            <span>${icon("check", 15)} 01 hóa đơn đã duyệt</span>
+            <span>${icon("check", 15)} 03 ảnh đã redaction</span>
+            <span>${icon("check", 15)} 01 biên bản bàn giao</span>
+            <span>${icon("check", 15)} 120 dòng danh sách nhận</span>
+          </div>
+          <a class="btn btn-outline btn-sm" href="#/link-impact">Xem toàn bộ chuỗi bằng chứng ${icon("arrowR", 14)}</a>
+        </div>
+      </div>
+    </div>
   `;
 }
 
@@ -2119,6 +2231,25 @@ function pageSponsor() {
           <div class="ci" style="background:#dcfce7;color:#16a34a">${icon("users", 18)}</div>
           <strong>120 học sinh được hỗ trợ</strong><span>Tác động</span>
         </div>
+      </div>
+    </div>
+
+    <div class="card card-pad mb-16 sponsor-impact-card">
+      <div class="impact-proof-photo">
+        <img src="./assets/impact-handover-demo.png" alt="Ảnh minh chứng demo về hoạt động bàn giao học liệu" />
+        <span>Minh chứng demo · 25/05/2026 · TX. Tân Châu</span>
+      </div>
+      <div>
+        <span class="eyebrow">TỪ 2.450.000Đ ĐẾN TÁC ĐỘNG THỰC</span>
+        <h3>Khoản chi học liệu đã hỗ trợ 120 học sinh</h3>
+        <p class="text-muted">Mỗi số liệu có thể truy ngược tới chứng từ, hoạt động, danh sách người nhận và biên bản bàn giao đã được duyệt.</p>
+        <div class="sponsor-proof-row">
+          <div><strong>20.417đ</strong><span>/ học sinh</span></div>
+          <div><strong>120/120</strong><span>có biên nhận</span></div>
+          <div><strong>5</strong><span>minh chứng đã duyệt</span></div>
+          <div><strong>100%</strong><span>truy xuất được</span></div>
+        </div>
+        <a class="btn btn-primary btn-sm" href="#/impact">Mở hồ sơ tác động ${icon("arrowR", 14)}</a>
       </div>
     </div>
 
@@ -2378,6 +2509,7 @@ function pageSettings() {
           <div class="kv-row"><span class="k">Partner sandbox</span><span class="v">Tách dữ liệu theo org/sponsor</span></div>
           <div class="kv-row"><span class="k">Currency</span><span class="v">VND</span></div>
           <div class="kv-row"><span class="k">OCR provider</span><span class="v">Mock client-side</span></div>
+          <div class="kv-row"><span class="k">Authenticity model</span><span class="v">${modelInfo.name} · ${modelInfo.size} · local WASM</span></div>
           <div class="kv-row"><span class="k">Audit log</span><span class="v">localStorage demo</span></div>
         </div>
       </div>
@@ -2480,9 +2612,32 @@ function bindPageEvents(route) {
   if (route === "upload") {
     const dz = document.getElementById("dropzone");
     const fi = document.getElementById("file-input");
+    const chooseFile = (file, provenance = "unknown") => {
+      if (!file) return;
+      if (!file.type.startsWith("image/")) {
+        toast("Model demo hiện nhận ảnh JPG/PNG");
+        return;
+      }
+      if (file.size > 20 * 1024 * 1024) {
+        toast("Tệp vượt giới hạn 20 MB");
+        return;
+      }
+      state.selectedFile = file;
+      state.selectedFileName = file.name;
+      state.selectedFileProvenance = provenance;
+      document.getElementById("selected-file-name").textContent = file.name;
+      document.getElementById("selected-file-size").textContent = `${(file.size / 1024 / 1024).toFixed(2)} MB`;
+      toast(`Đã chọn: ${file.name}`);
+    };
+    const loadSample = async (url, name, provenance = "unknown") => {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`Không tải được ảnh mẫu (${response.status})`);
+      const blob = await response.blob();
+      chooseFile(new File([blob], name, { type: blob.type || "image/jpeg" }), provenance);
+    };
     dz?.addEventListener("click", () => fi?.click());
     fi?.addEventListener("change", () => {
-      if (fi.files?.length) toast(`Đã chọn: ${fi.files[0].name}`);
+      if (fi.files?.length) chooseFile(fi.files[0]);
     });
     ["dragenter", "dragover"].forEach((ev) =>
       dz?.addEventListener(ev, (e) => {
@@ -2495,7 +2650,7 @@ function bindPageEvents(route) {
         e.preventDefault();
         dz.classList.remove("dragover");
         if (ev === "drop" && e.dataTransfer?.files?.length) {
-          toast(`Đã chọn: ${e.dataTransfer.files[0].name}`);
+          chooseFile(e.dataTransfer.files[0]);
         }
       })
     );
@@ -2505,7 +2660,24 @@ function bindPageEvents(route) {
       state.docType = btn.getAttribute("data-type");
       render();
     });
-    document.getElementById("btn-analyze")?.addEventListener("click", () => {
+    document.getElementById("btn-sample-invoice")?.addEventListener("click", () => {
+      loadSample("./assets/test-invoice-demo.jpg", "hoa-don-mau.jpg").catch((error) => toast(error.message));
+    });
+    document.getElementById("btn-sample-ai")?.addEventListener("click", () => {
+      loadSample("./assets/impact-handover-demo.png", "anh-ai-minh-chung.png", "declared_ai").catch((error) => toast(error.message));
+    });
+    document.getElementById("btn-analyze")?.addEventListener("click", async () => {
+      if (!state.selectedFile) {
+        try {
+          await loadSample("./assets/test-invoice-demo.jpg", "hoa-don-mau.jpg");
+        } catch (error) {
+          toast(error.message);
+          return;
+        }
+      }
+      state.analysisStatus = "pending";
+      state.analysisProgress = 4;
+      state.analysisMessage = "Chuẩn bị model";
       navigate("#/analyzing");
     });
     document.getElementById("btn-draft")?.addEventListener("click", () => toast("Đã lưu nháp (demo)"));
@@ -2513,27 +2685,57 @@ function bindPageEvents(route) {
 
   if (route === "analyzing") {
     clearTimeout(state.analyzeTimer);
-    let p = 82;
     const bar = document.getElementById("analyze-bar");
     const pct = document.getElementById("analyze-pct");
-    const tick = () => {
-      p = Math.min(100, p + 6);
-      if (bar) bar.style.width = p + "%";
-      if (pct) pct.textContent = p + "%";
-      if (p >= 100) {
-        navigate("#/extract");
-      } else {
-        state.analyzeTimer = setTimeout(tick, 350);
-      }
+    const message = document.getElementById("analysis-message");
+    const updateProgress = (value, label) => {
+      state.analysisProgress = value;
+      state.analysisMessage = label;
+      if (bar) bar.style.width = `${value}%`;
+      if (pct) pct.textContent = `${value}%`;
+      if (message) message.textContent = label;
     };
-    state.analyzeTimer = setTimeout(tick, 500);
+    if (state.analysisStatus === "pending" && state.selectedFile) {
+      state.analysisStatus = "running";
+      analyzeDocumentAuthenticity(state.selectedFile, updateProgress, { provenance: state.selectedFileProvenance })
+        .then((result) => {
+          saveAuthenticityAnalysis(result);
+          const flagged = result.riskLevel === "high" || result.riskLevel === "medium";
+          saveDocumentReview({
+            status: flagged ? "flagged" : "auto_clear",
+            riskScore: result.riskScore,
+            riskLevel: result.riskLevel,
+            flags: result.flags,
+            reviewedBy: "",
+            reviewedAt: "",
+            note: "",
+          });
+          state.analysisStatus = "complete";
+          updateProgress(100, result.modelAvailable ? "Model đã phân tích xong" : "Đã hoàn tất bằng heuristic fallback");
+          state.analyzeTimer = setTimeout(() => {
+            if (state.analysisStatus === "complete") navigate("#/extract");
+          }, 650);
+        })
+        .catch((error) => {
+          state.analysisStatus = "error";
+          updateProgress(100, "Không thể phân tích");
+          toast(`Lỗi model: ${error.message}`);
+          state.analyzeTimer = setTimeout(() => navigate("#/upload"), 900);
+        });
+    } else if (!state.selectedFile) {
+      toast("Không tìm thấy ảnh cần phân tích");
+      navigate("#/upload");
+    }
     document.getElementById("btn-cancel-analyze")?.addEventListener("click", () => {
+      state.analysisStatus = "cancelled";
       clearTimeout(state.analyzeTimer);
       navigate("#/upload");
       toast("Đã hủy xử lý");
     });
   } else {
-    clearTimeout(state.analyzeTimer);
+    if (state.analysisStatus !== "running") {
+      clearTimeout(state.analyzeTimer);
+    }
   }
 
   if (route === "extract") {
@@ -2550,12 +2752,40 @@ function bindPageEvents(route) {
       render();
     });
     document.getElementById("btn-approve")?.addEventListener("click", () => {
-      toast("Đã duyệt khoản chi");
+      const analysis = loadAuthenticityAnalysis();
+      const suspicious = analysis?.riskLevel === "high" || analysis?.riskLevel === "medium";
+      const session = getSession();
+      if (suspicious && session?.role !== "reviewer" && session?.role !== "org_admin") {
+        toast("Chứng từ có flag cần Reviewer hoặc Admin duyệt; đã giữ trong hàng chờ");
+        navigate("#/approvals");
+        return;
+      }
+      if (suspicious) {
+        saveDocumentReview({
+          ...loadDocumentReview(),
+          status: "approved",
+          reviewedBy: session?.name || "Reviewer",
+          reviewedAt: "12/11/2026 14:30",
+          note: "Đã đối chiếu bản gốc và xác nhận hợp lệ.",
+        });
+      }
+      toast(suspicious ? "Người duyệt đã xác minh; khoản chi được ghi nhận" : "Đã duyệt khoản chi");
       setTimeout(() => navigate("#/link-impact"), 600);
     });
     document.getElementById("btn-edit")?.addEventListener("click", () => toast("Chế độ chỉnh sửa (demo)"));
     document.getElementById("btn-reject")?.addEventListener("click", () => {
-      toast("Đã từ chối chứng từ");
+      const analysis = loadAuthenticityAnalysis();
+      const suspicious = analysis?.riskLevel === "high" || analysis?.riskLevel === "medium";
+      const session = getSession();
+      if (suspicious && session?.role !== "reviewer" && session?.role !== "org_admin") {
+        toast("Chỉ Reviewer hoặc Admin được quyết định chứng từ có flag");
+        navigate("#/approvals");
+        return;
+      }
+      if (suspicious) {
+        saveDocumentReview({ ...loadDocumentReview(), status: "rejected", reviewedBy: getSession()?.name || "Reviewer", reviewedAt: "12/11/2026 14:30", note: "Yêu cầu tải lại bản chụp gốc." });
+      }
+      toast(suspicious ? "Đã từ chối và yêu cầu tải lại bản gốc" : "Đã từ chối chứng từ");
       navigate("#/documents");
     });
   }
